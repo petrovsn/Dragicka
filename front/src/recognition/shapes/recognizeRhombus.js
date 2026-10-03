@@ -161,7 +161,7 @@ export function recognizeRhombus(points) {
         },
     ];
 
-    return {
+    let result = {
         type: "rhombus",
 
         probability: Math.min(
@@ -190,7 +190,11 @@ export function recognizeRhombus(points) {
             horizontalLength >= verticalLength
                 ? "horizontal"
                 : "vertical",
-    };
+    }
+
+    console.log("rhombus", result)
+
+    return result;
 }
 
 
