@@ -1,15 +1,17 @@
 import {
     sideLengths,
-    angles,
     minMaxRatio,
-    average,
     simplifyClosed,
     isClosed,
     polygonArea,
 } from "../geometry";
 
 export function recognizeRhombus(points) {
-    if (!points || points.length < 10 || !isClosed(points)) {
+    if (
+        !points ||
+        points.length < 10 ||
+        !isClosed(points)
+    ) {
         return {
             type: "rhombus",
             probability: 0,
@@ -26,6 +28,7 @@ export function recognizeRhombus(points) {
     }
 
     let bestVertices = null;
+    let bestGeometry = null;
     let bestProbability = 0;
 
     const tolerances = [
@@ -51,57 +54,20 @@ export function recognizeRhombus(points) {
 
         const sides = sideLengths(vertices);
 
-        /*
-         * Главное условие ромба:
-         *
-         * все четыре стороны примерно равны.
-         *
-         * Если это условие не выполняется, фигура вообще
-         * не может быть ромбом.
-         */
-        const sideScore = minMaxRatio(sides);
+        const sideScore =
+            minMaxRatio(sides);
 
-        if (sideScore < 0.82) {
+        /*
+         * Ромб обязан иметь примерно равные стороны.
+         */
+        if (sideScore < 0.80) {
             continue;
         }
 
-        /*
-         * Проверяем, что это НЕ квадрат.
-         *
-         * Если углы близки к 90°, это должен классифицировать
-         * recognizeSquare, а не recognizeRhombus.
-         */
-        const vertexAngles = angles(vertices);
+        const geometry =
+            analyzeRhombusGeometry(vertices);
 
-        const squareAngleError =
-            average(
-                vertexAngles.map(
-                    angle =>
-                        Math.abs(angle - 90) / 90
-                )
-            );
-
-        /*
-         * Чем сильнее углы отличаются от 90°, тем больше
-         * это похоже именно на ромб.
-         */
-        const nonSquareScore = Math.min(
-            1,
-            squareAngleError * 4
-        );
-
-        /*
-         * Для настоящего ромба диагонали:
-         *
-         * - пересекаются в центре;
-         * - перпендикулярны;
-         * - одна должна быть горизонтальной;
-         * - другая вертикальной.
-         */
-        const diagonalGeometry =
-            analyzeDiagonals(vertices);
-
-        if (!diagonalGeometry.valid) {
+        if (!geometry.valid) {
             continue;
         }
 
@@ -113,25 +79,29 @@ export function recognizeRhombus(points) {
         );
 
         const probability =
-            sideScore * 0.45 +
-            nonSquareScore * 0.20 +
-            diagonalGeometry.orientationScore * 0.25 +
-            diagonalGeometry.perpendicularScore * 0.05 +
+            sideScore * 0.50 +
+            geometry.orientationScore * 0.35 +
+            geometry.perpendicularScore * 0.10 +
             areaScore * 0.05;
 
-        if (probability > bestProbability) {
-            bestProbability = probability;
-            bestVertices = vertices;
+        if (
+            probability > bestProbability
+        ) {
+            bestProbability =
+                probability;
+
+            bestVertices =
+                vertices;
+
+            bestGeometry =
+                geometry;
         }
     }
 
-    /*
-     * Ромб должен иметь заметно ненулевую
-     * непохожесть на квадрат.
-     */
     if (
         !bestVertices ||
-        bestProbability < 0.72
+        !bestGeometry ||
+        bestProbability < 0.65
     ) {
         return {
             type: "rhombus",
@@ -139,153 +109,102 @@ export function recognizeRhombus(points) {
         };
     }
 
-    const diagonalGeometry =
-        analyzeDiagonals(bestVertices);
-
-    /*
-     * Сохраняем положение главной и побочной осей.
-     *
-     * Главная ось = более длинная диагональ.
-     * Она может быть вертикальной ИЛИ горизонтальной.
-     */
-    const diagonalA = diagonalGeometry.diagonalA;
-    const diagonalB = diagonalGeometry.diagonalB;
-
-    const center = diagonalGeometry.center;
-
-    const diagonalALength =
-        distanceBetween(
-            diagonalA.start,
-            diagonalA.end
-        );
-
-    const diagonalBLength =
-        distanceBetween(
-            diagonalB.start,
-            diagonalB.end
-        );
-
-    const firstIsVertical =
-        Math.abs(
-            diagonalA.end.y -
-            diagonalA.start.y
-        ) >=
-        Math.abs(
-            diagonalA.end.x -
-            diagonalA.start.x
-        );
-
-    const verticalDiagonal =
-        firstIsVertical
-            ? diagonalA
-            : diagonalB;
-
-    const horizontalDiagonal =
-        firstIsVertical
-            ? diagonalB
-            : diagonalA;
-
-    const verticalLength =
-        firstIsVertical
-            ? diagonalALength
-            : diagonalBLength;
+    const center =
+        bestGeometry.center;
 
     const horizontalLength =
-        firstIsVertical
-            ? diagonalBLength
-            : diagonalALength;
+        bestGeometry.horizontalLength;
+
+    const verticalLength =
+        bestGeometry.verticalLength;
 
     /*
-     * Нормализуем ромб.
+     * Нормализуем ромб:
      *
-     * Вершины всегда находятся:
+     *       top
+     *        /\
+     *       /  \
+     * left <    > right
+     *       \  /
+     *        \/
+     *      bottom
      *
-     *        top
-     *          *
+     * При этом сохраняем длины обеих диагоналей.
      *
-     * left *   +   * right
-     *
-     *          *
-     *       bottom
-     *
-     * Но размеры вертикальной и горизонтальной диагоналей
-     * полностью сохраняются.
+     * Поэтому если длинная диагональ была
+     * горизонтальной — она останется горизонтальной.
      */
     const normalizedVertices = [
         {
             x: center.x,
-            y: center.y - verticalLength / 2,
+            y:
+                center.y -
+                verticalLength / 2,
         },
         {
-            x: center.x + horizontalLength / 2,
+            x:
+                center.x +
+                horizontalLength / 2,
             y: center.y,
         },
         {
             x: center.x,
-            y: center.y + verticalLength / 2,
+            y:
+                center.y +
+                verticalLength / 2,
         },
         {
-            x: center.x - horizontalLength / 2,
+            x:
+                center.x -
+                horizontalLength / 2,
             y: center.y,
         },
     ];
 
-    const longDiagonal =
-        Math.max(
-            verticalLength,
-            horizontalLength
-        );
-
-    const longDiagonalOrientation =
-        verticalLength >= horizontalLength
-            ? "vertical"
-            : "horizontal";
-
     return {
         type: "rhombus",
+
         probability: Math.min(
             1,
             bestProbability
         ),
 
-        vertices: normalizedVertices,
+        vertices:
+            normalizedVertices,
 
         center,
-
-        longDiagonal,
-        longDiagonalOrientation,
 
         verticalDiagonalLength:
             verticalLength,
 
         horizontalDiagonalLength:
             horizontalLength,
+
+        longDiagonal:
+            Math.max(
+                horizontalLength,
+                verticalLength
+            ),
+
+        longDiagonalOrientation:
+            horizontalLength >= verticalLength
+                ? "horizontal"
+                : "vertical",
     };
 }
 
-function getShapeSize(points) {
-    let minX = Infinity;
-    let maxX = -Infinity;
-    let minY = Infinity;
-    let maxY = -Infinity;
 
-    for (const point of points) {
-        minX = Math.min(minX, point.x);
-        maxX = Math.max(maxX, point.x);
-        minY = Math.min(minY, point.y);
-        maxY = Math.max(maxY, point.y);
-    }
-
-    return Math.max(
-        maxX - minX,
-        maxY - minY
-    );
-}
-
-function analyzeDiagonals(vertices) {
+/*
+ * Анализируем именно геометрию четырёхугольника,
+ * не полагаясь на то, с какой вершины начался рисунок.
+ */
+function analyzeRhombusGeometry(vertices) {
     /*
-     * После simplifyClosed вершины идут по контуру,
-     * поэтому 0-2 и 1-3 — две диагонали.
+     * После simplifyClosed вершины должны идти
+     * по контуру. Поэтому противоположные вершины:
+     *
+     * 0 <-> 2
+     * 1 <-> 3
      */
     const diagonalA = {
         start: vertices[0],
@@ -297,56 +216,59 @@ function analyzeDiagonals(vertices) {
         end: vertices[3],
     };
 
-    const centerA = {
-        x:
-            (diagonalA.start.x +
-                diagonalA.end.x) / 2,
+    const centerA = midpoint(
+        diagonalA.start,
+        diagonalA.end
+    );
 
-        y:
-            (diagonalA.start.y +
-                diagonalA.end.y) / 2,
-    };
-
-    const centerB = {
-        x:
-            (diagonalB.start.x +
-                diagonalB.end.x) / 2,
-
-        y:
-            (diagonalB.start.y +
-                diagonalB.end.y) / 2,
-    };
+    const centerB = midpoint(
+        diagonalB.start,
+        diagonalB.end
+    );
 
     /*
-     * Для ромба диагонали должны пересекаться
-     * примерно посередине.
+     * Диагонали настоящего ромба должны пересекаться
+     * примерно в одной точке.
      */
+    const diagonalLength = Math.max(
+        distanceBetween(
+            diagonalA.start,
+            diagonalA.end
+        ),
+        distanceBetween(
+            diagonalB.start,
+            diagonalB.end
+        )
+    );
+
+    if (diagonalLength <= 0) {
+        return {
+            valid: false,
+        };
+    }
+
     const centerDistance =
         distanceBetween(
             centerA,
             centerB
         );
 
-    const diagonalLength =
-        Math.max(
-            distanceBetween(
-                diagonalA.start,
-                diagonalA.end
-            ),
-            distanceBetween(
-                diagonalB.start,
-                diagonalB.end
-            )
-        );
-
     if (
-        diagonalLength === 0 ||
-        centerDistance > diagonalLength * 0.12
+        centerDistance >
+        diagonalLength * 0.18
     ) {
         return {
             valid: false,
         };
     }
+
+    const center = {
+        x:
+            (centerA.x + centerB.x) / 2,
+
+        y:
+            (centerA.y + centerB.y) / 2,
+    };
 
     const vectorA = {
         x:
@@ -381,8 +303,8 @@ function analyzeDiagonals(vertices) {
         );
 
     if (
-        lengthA === 0 ||
-        lengthB === 0
+        lengthA <= 0 ||
+        lengthB <= 0
     ) {
         return {
             valid: false,
@@ -390,9 +312,10 @@ function analyzeDiagonals(vertices) {
     }
 
     /*
-     * Перпендикулярность диагоналей.
+     * Диагонали ромба должны быть примерно
+     * перпендикулярны.
      */
-    const normalizedDot =
+    const dot =
         Math.abs(
             (
                 vectorA.x * vectorB.x +
@@ -404,70 +327,129 @@ function analyzeDiagonals(vertices) {
     const perpendicularScore =
         Math.max(
             0,
-            1 - normalizedDot
+            1 - dot
         );
 
-    if (perpendicularScore < 0.85) {
+    if (
+        perpendicularScore < 0.65
+    ) {
         return {
             valid: false,
         };
     }
 
     /*
-     * Одна диагональ должна быть преимущественно
-     * горизонтальной, другая — преимущественно вертикальной.
+     * Главное отличие ромба от квадрата
+     * в нашей системе распознавания:
      *
-     * Это принципиальное отличие ромба от произвольно
-     * повернутого ромба.
+     * ромб ориентирован диагоналями по осям экрана.
+     *
+     * Поэтому одна диагональ должна быть
+     * преимущественно горизонтальной,
+     * другая — преимущественно вертикальной.
      */
     const orientationA =
-        getAxisOrientationScore(vectorA);
+        getAxisOrientation(
+            vectorA
+        );
 
     const orientationB =
-        getAxisOrientationScore(vectorB);
+        getAxisOrientation(
+            vectorB
+        );
 
     const orientationScore =
-        orientationA.horizontal *
-        orientationB.vertical +
-        orientationA.vertical *
-        orientationB.horizontal;
+        Math.max(
+            orientationA.horizontal *
+                orientationB.vertical,
 
-    if (orientationScore < 0.75) {
+            orientationA.vertical *
+                orientationB.horizontal
+        );
+
+    if (
+        orientationScore < 0.65
+    ) {
         return {
             valid: false,
         };
     }
 
-    const center = {
-        x:
-            (centerA.x + centerB.x) / 2,
+    /*
+     * Явно определяем горизонтальную
+     * и вертикальную диагональ.
+     */
+    let horizontalLength;
+    let verticalLength;
 
-        y:
-            (centerA.y + centerB.y) / 2,
-    };
+    if (
+        orientationA.horizontal >=
+        orientationA.vertical
+    ) {
+        horizontalLength =
+            lengthA;
+
+        verticalLength =
+            lengthB;
+    } else {
+        horizontalLength =
+            lengthB;
+
+        verticalLength =
+            lengthA;
+    }
+
+    /*
+     * Дополнительная защита от ситуации,
+     * когда обе диагонали практически одинаково
+     * ориентированы из-за слишком кривого рисунка.
+     */
+    const horizontalOrientation =
+        Math.max(
+            orientationA.horizontal,
+            orientationB.horizontal
+        );
+
+    const verticalOrientation =
+        Math.max(
+            orientationA.vertical,
+            orientationB.vertical
+        );
+
+    if (
+        horizontalOrientation < 0.65 ||
+        verticalOrientation < 0.65
+    ) {
+        return {
+            valid: false,
+        };
+    }
 
     return {
         valid: true,
 
+        center,
+
         diagonalA,
         diagonalB,
 
-        center,
-
-        perpendicularScore,
+        horizontalLength,
+        verticalLength,
 
         orientationScore,
+        perpendicularScore,
     };
 }
 
-function getAxisOrientationScore(vector) {
+
+function getAxisOrientation(vector) {
     const length =
         Math.hypot(
             vector.x,
             vector.y
         );
 
-    if (length === 0) {
+    if (length <= 0) {
         return {
             horizontal: 0,
             vertical: 0,
@@ -476,16 +458,65 @@ function getAxisOrientationScore(vector) {
 
     return {
         horizontal:
-            Math.abs(vector.x) / length,
+            Math.abs(vector.x) /
+            length,
 
         vertical:
-            Math.abs(vector.y) / length,
+            Math.abs(vector.y) /
+            length,
     };
 }
+
+
+function midpoint(a, b) {
+    return {
+        x:
+            (a.x + b.x) / 2,
+
+        y:
+            (a.y + b.y) / 2,
+    };
+}
+
 
 function distanceBetween(a, b) {
     return Math.hypot(
         b.x - a.x,
         b.y - a.y
+    );
+}
+
+
+function getShapeSize(points) {
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+
+    for (const point of points) {
+        minX = Math.min(
+            minX,
+            point.x
+        );
+
+        maxX = Math.max(
+            maxX,
+            point.x
+        );
+
+        minY = Math.min(
+            minY,
+            point.y
+        );
+
+        maxY = Math.max(
+            maxY,
+            point.y
+        );
+    }
+
+    return Math.max(
+        maxX - minX,
+        maxY - minY
     );
 }

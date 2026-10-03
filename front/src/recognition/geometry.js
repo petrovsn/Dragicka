@@ -383,7 +383,7 @@ export function rotateArray(array, startIndex) {
     ];
 }
 
-export function isClosed(points, ratio = 0.05) {
+export function isClosed(points, ratio = 0.1) {
     if (!points || points.length < 3) {
         return false;
     }

@@ -1,6 +1,5 @@
 import {
     sideLengths,
-    angles,
     minMaxRatio,
     average,
     simplifyClosed,
@@ -52,10 +51,7 @@ export function recognizeSquare(points) {
         const sides = sideLengths(vertices);
 
         /*
-         * Для квадрата все стороны должны быть примерно одинаковыми.
-         *
-         * Это важнее ориентации: квадрат может быть повернут
-         * на любой угол.
+         * Квадрат обязан иметь четыре примерно равные стороны.
          */
         const sideScore = minMaxRatio(sides);
 
@@ -63,34 +59,32 @@ export function recognizeSquare(points) {
             continue;
         }
 
-        const vertexAngles = angles(vertices);
-
         /*
-         * У квадрата все четыре угла близки к 90°.
+         * Главное отличие квадрата от ромба:
+         *
+         * стороны квадрата должны быть ориентированы
+         * примерно горизонтально/вертикально.
+         *
+         * Нам НЕ важно, насколько близки углы к 90°:
+         * ориентация является главным признаком.
          */
-        const angleErrors = vertexAngles.map(
-            angle => Math.abs(angle - 90) / 90
-        );
+        const sideOrientationScore =
+            calculateAxisAlignedSideScore(vertices);
 
-        const angleScore = Math.max(
-            0,
-            1 - average(angleErrors)
-        );
-
-        /*
-         * Не допускаем четырехугольники с очень плохой геометрией.
-         */
-        if (angleScore < 0.72) {
+        if (sideOrientationScore < 0.70) {
             continue;
         }
 
         /*
-         * Проверяем, что противоположные стороны действительно
-         * примерно параллельны.
+         * Проверяем параллельность противоположных сторон.
          */
         const parallelScore =
             calculateParallelScore(vertices);
 
+        /*
+         * Площадь нужна только как слабый дополнительный
+         * признак против вырожденных четырехугольников.
+         */
         const area = polygonArea(vertices);
 
         const areaScore = Math.min(
@@ -99,8 +93,8 @@ export function recognizeSquare(points) {
         );
 
         const probability =
-            sideScore * 0.40 +
-            angleScore * 0.45 +
+            sideScore * 0.50 +
+            sideOrientationScore * 0.35 +
             parallelScore * 0.10 +
             areaScore * 0.05;
 
@@ -110,11 +104,6 @@ export function recognizeSquare(points) {
         }
     }
 
-    /*
-     * Квадрат должен быть действительно квадратом.
-     * Порог достаточно высокий, чтобы ромб не начинал
-     * случайно классифицироваться как квадрат.
-     */
     if (
         !bestVertices ||
         bestProbability < 0.72
@@ -126,20 +115,15 @@ export function recognizeSquare(points) {
     }
 
     /*
-     * Нормализация:
-     *
-     * исходный квадрат мог быть повернут на любой угол.
-     * Нам это больше не важно.
-     *
-     * Строим новый квадрат со сторонами строго
-     * параллельными осям экрана.
+     * Нормализуем квадрат строго по сторонам экрана.
      */
     const center = calculateCenter(bestVertices);
 
-    const averageSide =
+    const squareSize =
         average(sideLengths(bestVertices));
 
-    const halfSize = averageSide / 2;
+    const halfSize =
+        squareSize / 2;
 
     const normalizedVertices = [
         {
@@ -194,16 +178,64 @@ function calculateCenter(vertices) {
     return {
         x:
             vertices.reduce(
-                (sum, vertex) => sum + vertex.x,
+                (sum, vertex) =>
+                    sum + vertex.x,
                 0
             ) / vertices.length,
 
         y:
             vertices.reduce(
-                (sum, vertex) => sum + vertex.y,
+                (sum, vertex) =>
+                    sum + vertex.y,
                 0
             ) / vertices.length,
     };
+}
+
+function calculateAxisAlignedSideScore(vertices) {
+    const scores = [];
+
+    for (let i = 0; i < 4; i++) {
+        const current = vertices[i];
+        const next = vertices[(i + 1) % 4];
+
+        const dx =
+            next.x - current.x;
+
+        const dy =
+            next.y - current.y;
+
+        const length =
+            Math.hypot(dx, dy);
+
+        if (length === 0) {
+            return 0;
+        }
+
+        /*
+         * Насколько сторона горизонтальна.
+         */
+        const horizontal =
+            Math.abs(dx) / length;
+
+        /*
+         * Насколько сторона вертикальна.
+         */
+        const vertical =
+            Math.abs(dy) / length;
+
+        /*
+         * Для стороны подходит либо H, либо V.
+         */
+        scores.push(
+            Math.max(
+                horizontal,
+                vertical
+            )
+        );
+    }
+
+    return average(scores);
 }
 
 function calculateParallelScore(vertices) {
@@ -219,35 +251,43 @@ function calculateParallelScore(vertices) {
         });
     }
 
-    const scoreA = parallelism(
-        vectors[0],
-        vectors[2]
-    );
+    const scoreA =
+        parallelism(
+            vectors[0],
+            vectors[2]
+        );
 
-    const scoreB = parallelism(
-        vectors[1],
-        vectors[3]
-    );
+    const scoreB =
+        parallelism(
+            vectors[1],
+            vectors[3]
+        );
 
     return (scoreA + scoreB) / 2;
 }
 
 function parallelism(a, b) {
-    const lengthA = Math.hypot(a.x, a.y);
-    const lengthB = Math.hypot(b.x, b.y);
+    const lengthA =
+        Math.hypot(a.x, a.y);
 
-    if (lengthA === 0 || lengthB === 0) {
+    const lengthB =
+        Math.hypot(b.x, b.y);
+
+    if (
+        lengthA === 0 ||
+        lengthB === 0
+    ) {
         return 0;
     }
 
-    const normalizedDot =
-        Math.abs(
-            (a.x * b.x + a.y * b.y) /
-            (lengthA * lengthB)
-        );
-
     return Math.min(
         1,
-        normalizedDot
+        Math.abs(
+            (
+                a.x * b.x +
+                a.y * b.y
+            ) /
+            (lengthA * lengthB)
+        )
     );
 }
