@@ -1,0 +1,1617 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Распознаватель фигур</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        html,
+        body {
+            margin: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #10131a;
+            color: #fff;
+            font-family: Arial, sans-serif;
+        }
+
+        #top {
+            height: 56px;
+            display: flex;
+            align-items: center;
+            gap: 25px;
+            padding: 0 15px;
+
+            background: #181c25;
+            border-bottom: 1px solid #303746;
+        }
+
+        #title {
+            font-weight: bold;
+            font-size: 18px;
+        }
+
+        #status {
+            color: #9ba8bb;
+        }
+
+        #status b {
+            color: white;
+        }
+
+        #canvas {
+            position: absolute;
+            left: 0;
+            top: 56px;
+
+            width: 100%;
+            height: calc(100% - 56px);
+
+            display: block;
+
+            touch-action: none;
+            cursor: crosshair;
+        }
+    </style>
+</head>
+
+<body>
+
+<div id="top">
+    <div id="title">Распознаватель фигур</div>
+
+    <div id="status">
+        Фигура: <b id="shape">—</b>
+    </div>
+</div>
+
+<canvas id="canvas"></canvas>
+
+
+<script>
+"use strict";
+
+
+/* =========================================================
+   CANVAS
+   ========================================================= */
+
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+
+const shapeLabel = document.getElementById("shape");
+
+
+function resizeCanvas() {
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+
+    canvas.width = Math.round(rect.width * dpr);
+    canvas.height = Math.round(rect.height * dpr);
+
+    ctx.setTransform(
+        dpr,
+        0,
+        0,
+        dpr,
+        0,
+        0
+    );
+
+    redraw();
+}
+
+
+window.addEventListener("resize", resizeCanvas);
+
+
+/* =========================================================
+   STATE
+   ========================================================= */
+
+let drawing = false;
+
+let points = [];
+
+let mouse = {
+    x: 0,
+    y: 0
+};
+
+/*
+ * null — ещё рисуем / не распознали
+ *
+ * После распознавания:
+ *
+ * {
+ *     type: "circle",
+ *     center: ...,
+ *     size: ...
+ * }
+ */
+let recognized = null;
+
+
+/* =========================================================
+   POINTER
+   ========================================================= */
+
+canvas.addEventListener("pointerdown", e => {
+
+    drawing = true;
+
+    points = [];
+
+    recognized = null;
+
+    mouse = getMousePosition(e);
+
+    points.push({
+        x: mouse.x,
+        y: mouse.y
+    });
+
+    shapeLabel.textContent = "рисование";
+
+    canvas.setPointerCapture(e.pointerId);
+
+    redraw();
+});
+
+
+canvas.addEventListener("pointermove", e => {
+
+    mouse = getMousePosition(e);
+
+
+    /*
+     * Если фигура уже распознана,
+     * просто таскаем её за мышью.
+     */
+    if (recognized) {
+        redraw();
+        return;
+    }
+
+
+    /*
+     * Пока рисуем — добавляем точки.
+     */
+    if (!drawing) {
+        return;
+    }
+
+
+    const last =
+        points[points.length - 1];
+
+
+    /*
+     * Не добавляем тысячи почти одинаковых
+     * точек.
+     */
+    if (
+        !last ||
+        distance(last, mouse) > 2
+    ) {
+        points.push({
+            x: mouse.x,
+            y: mouse.y
+        });
+    }
+
+
+    /*
+     * Пытаемся распознать уже во время рисования.
+     */
+    if (points.length >= 30) {
+
+        const result =
+            recognize(points);
+
+
+        if (result) {
+
+            recognized = result;
+
+            shapeLabel.textContent =
+                result.name;
+
+            redraw();
+
+            return;
+        }
+    }
+
+
+    redraw();
+});
+
+
+canvas.addEventListener("pointerup", e => {
+
+    if (!drawing) {
+        return;
+    }
+
+    drawing = false;
+
+    mouse = getMousePosition(e);
+
+
+    try {
+        canvas.releasePointerCapture(e.pointerId);
+    } catch (_) {
+    }
+
+
+    /*
+     * Если до отпускания не распознали,
+     * делаем последнюю попытку.
+     */
+    if (!recognized) {
+
+        const result =
+            recognize(points);
+
+
+        if (result) {
+
+            recognized = result;
+
+            shapeLabel.textContent =
+                result.name;
+
+        } else {
+
+            shapeLabel.textContent =
+                "неизвестная фигура";
+        }
+    }
+
+
+    redraw();
+});
+
+
+canvas.addEventListener("pointercancel", () => {
+
+    drawing = false;
+});
+
+
+/* =========================================================
+   DRAW
+   ========================================================= */
+
+function redraw() {
+
+    const rect =
+        canvas.getBoundingClientRect();
+
+
+    ctx.clearRect(
+        0,
+        0,
+        rect.width,
+        rect.height
+    );
+
+
+    /*
+     * Уже распознали.
+     */
+    if (recognized) {
+
+        drawRecognized();
+
+        return;
+    }
+
+
+    /*
+     * Обычная линия пользователя.
+     */
+    drawRawLine();
+}
+
+
+/* =========================================================
+   RAW LINE
+   ========================================================= */
+
+function drawRawLine() {
+
+    if (points.length < 2) {
+        return;
+    }
+
+
+    ctx.beginPath();
+
+    ctx.moveTo(
+        points[0].x,
+        points[0].y
+    );
+
+
+    for (let i = 1; i < points.length; i++) {
+
+        ctx.lineTo(
+            points[i].x,
+            points[i].y
+        );
+    }
+
+
+    ctx.strokeStyle = "#65aaff";
+    ctx.lineWidth = 4;
+
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+
+    ctx.stroke();
+}
+
+
+/* =========================================================
+   DRAW RECOGNIZED
+   ========================================================= */
+
+function drawRecognized() {
+
+    const shape = recognized;
+
+
+    /*
+     * Пока мышь зажата — центр фигуры находится
+     * под указателем.
+     *
+     * После отпускания mouse остаётся в последней
+     * позиции, поэтому фигура там и останется.
+     */
+    const cx = mouse.x;
+    const cy = mouse.y;
+
+
+    ctx.beginPath();
+
+
+    if (shape.type === "circle") {
+
+        ctx.arc(
+            cx,
+            cy,
+            shape.radius,
+            0,
+            Math.PI * 2
+        );
+
+    } else {
+
+        const vertices =
+            getShapeVertices(
+                shape.type,
+                cx,
+                cy,
+                shape.radius
+            );
+
+
+        ctx.moveTo(
+            vertices[0].x,
+            vertices[0].y
+        );
+
+
+        for (
+            let i = 1;
+            i < vertices.length;
+            i++
+        ) {
+
+            ctx.lineTo(
+                vertices[i].x,
+                vertices[i].y
+            );
+        }
+
+
+        ctx.closePath();
+    }
+
+
+    ctx.strokeStyle = "#65aaff";
+    ctx.lineWidth = 4;
+
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+
+    ctx.stroke();
+}
+
+
+/* =========================================================
+   RECOGNITION
+   ========================================================= */
+
+function recognize(points) {
+
+    if (points.length < 30) {
+        return null;
+    }
+
+
+    const bounds =
+        getBounds(points);
+
+
+    const size =
+        Math.max(
+            bounds.width,
+            bounds.height
+        );
+
+
+    if (size < 40) {
+        return null;
+    }
+
+
+    /*
+     * Насколько конец приблизился к началу.
+     *
+     * Это важно: мы не хотим распознавать
+     * случайную незавершённую линию.
+     */
+    const closingDistance =
+        distance(
+            points[0],
+            points[points.length - 1]
+        );
+
+
+    if (
+        closingDistance >
+        size * 0.30
+    ) {
+        return null;
+    }
+
+
+    /*
+     * Сначала проверяем круг.
+     */
+    const circleScore =
+        checkCircle(points);
+
+
+    if (circleScore > 0.78) {
+
+        return {
+            type: "circle",
+            name: "круг",
+
+            radius:
+                Math.min(
+                    bounds.width,
+                    bounds.height
+                ) / 2
+        };
+    }
+
+
+    /*
+     * Упрощаем линию до вершин.
+     */
+    const simplified =
+        simplify(
+            points,
+            size * 0.035
+        );
+
+
+    if (simplified.length < 3) {
+        return null;
+    }
+
+
+    /*
+     * STAR
+     *
+     * Звезда имеет 10 вершин:
+     *
+     * внешний луч
+     * внутренняя вершина
+     * внешний луч
+     * ...
+     */
+    if (simplified.length === 10) {
+
+        const score =
+            checkStar(simplified);
+
+
+        if (score > 0.58) {
+
+            return {
+                type: "star",
+                name: "пятилучевая звезда",
+
+                radius:
+                    size / 2
+            };
+        }
+    }
+
+
+    /*
+     * HOURGLASS
+     *
+     * Шесть вершин.
+     */
+    if (simplified.length === 6) {
+
+        const score =
+            checkHourglass(
+                simplified
+            );
+
+
+        if (score > 0.55) {
+
+            return {
+                type: "hourglass",
+                name: "песочные часы",
+
+                radius:
+                    size / 2
+            };
+        }
+    }
+
+
+    /*
+     * Обычные правильные фигуры.
+     */
+    if (
+        simplified.length >= 3 &&
+        simplified.length <= 5
+    ) {
+
+        const score =
+            checkRegularPolygon(
+                simplified
+            );
+
+
+        if (score > 0.62) {
+
+            const names = {
+                3: "треугольник",
+                4: "квадрат",
+                5: "пятиугольник"
+            };
+
+
+            return {
+                type:
+                    polygonType(
+                        simplified.length
+                    ),
+
+                name:
+                    names[
+                        simplified.length
+                    ],
+
+                radius:
+                    size / 2
+            };
+        }
+    }
+
+
+    return null;
+}
+
+
+/* =========================================================
+   CIRCLE
+   ========================================================= */
+
+function checkCircle(points) {
+
+    const center =
+        centroid(points);
+
+
+    const radii =
+        points.map(
+            p =>
+                distance(
+                    p,
+                    center
+                )
+        );
+
+
+    const averageRadius =
+        average(radii);
+
+
+    if (averageRadius === 0) {
+        return 0;
+    }
+
+
+    const deviation =
+        standardDeviation(radii) /
+        averageRadius;
+
+
+    /*
+     * Чем меньше разброс радиусов,
+     * тем больше это похоже на круг.
+     */
+    return clamp(
+        1 - deviation * 5,
+        0,
+        1
+    );
+}
+
+
+/* =========================================================
+   REGULAR POLYGON
+   ========================================================= */
+
+function checkRegularPolygon(
+    points
+) {
+
+    /*
+     * Правильный многоугольник должен быть
+     * выпуклым.
+     */
+    if (!isConvex(points)) {
+        return 0;
+    }
+
+
+    const sides = [];
+
+
+    for (
+        let i = 0;
+        i < points.length;
+        i++
+    ) {
+
+        sides.push(
+            distance(
+                points[i],
+                points[
+                    (i + 1) %
+                    points.length
+                ]
+            )
+        );
+    }
+
+
+    const avgSide =
+        average(sides);
+
+
+    if (avgSide === 0) {
+        return 0;
+    }
+
+
+    const sideDeviation =
+        standardDeviation(sides) /
+        avgSide;
+
+
+    const sideScore =
+        clamp(
+            1 - sideDeviation * 4,
+            0,
+            1
+        );
+
+
+    /*
+     * Проверяем углы.
+     */
+    const expectedAngle =
+        (
+            points.length - 2
+        ) *
+        Math.PI /
+        points.length;
+
+
+    let error = 0;
+
+
+    for (
+        let i = 0;
+        i < points.length;
+        i++
+    ) {
+
+        const a =
+            points[
+                (i - 1 + points.length) %
+                points.length
+            ];
+
+        const b =
+            points[i];
+
+        const c =
+            points[
+                (i + 1) %
+                points.length
+            ];
+
+
+        const angle =
+            angleAt(
+                a,
+                b,
+                c
+            );
+
+
+        error +=
+            Math.abs(
+                angle -
+                expectedAngle
+            );
+    }
+
+
+    error /=
+        points.length;
+
+
+    const angleScore =
+        clamp(
+            1 -
+            error / 0.7,
+            0,
+            1
+        );
+
+
+    return (
+        sideScore * 0.55 +
+        angleScore * 0.45
+    );
+}
+
+
+/* =========================================================
+   STAR
+   ========================================================= */
+
+function checkStar(points) {
+
+    const center =
+        centroid(points);
+
+
+    const radii =
+        points.map(
+            p =>
+                distance(
+                    p,
+                    center
+                )
+        );
+
+
+    /*
+     * В звезде нечётные вершины должны
+     * быть заметно ближе центра.
+     */
+
+    const outer = [];
+    const inner = [];
+
+
+    for (
+        let i = 0;
+        i < radii.length;
+        i++
+    ) {
+
+        if (i % 2 === 0) {
+            outer.push(radii[i]);
+        } else {
+            inner.push(radii[i]);
+        }
+    }
+
+
+    const outerAvg =
+        average(outer);
+
+    const innerAvg =
+        average(inner);
+
+
+    if (
+        innerAvg >
+        outerAvg * 0.70
+    ) {
+        return 0;
+    }
+
+
+    const outerDeviation =
+        standardDeviation(outer) /
+        outerAvg;
+
+
+    const innerDeviation =
+        standardDeviation(inner) /
+        innerAvg;
+
+
+    const regularity =
+        clamp(
+            1 -
+            (
+                outerDeviation +
+                innerDeviation
+            ) * 3,
+            0,
+            1
+        );
+
+
+    const ratio =
+        1 -
+        innerAvg / outerAvg;
+
+
+    return (
+        regularity * 0.65 +
+        ratio * 0.35
+    );
+}
+
+
+/* =========================================================
+   HOURGLASS
+   ========================================================= */
+
+function checkHourglass(points) {
+
+    /*
+     * Должна быть вогнутая фигура.
+     */
+    if (isConvex(points)) {
+        return 0;
+    }
+
+
+    const center =
+        centroid(points);
+
+
+    const radii =
+        points.map(
+            p =>
+                distance(
+                    p,
+                    center
+                )
+        );
+
+
+    const minRadius =
+        Math.min(...radii);
+
+    const maxRadius =
+        Math.max(...radii);
+
+
+    /*
+     * Должна быть выраженная "талия".
+     */
+    const waist =
+        minRadius /
+        maxRadius;
+
+
+    if (waist > 0.72) {
+        return 0;
+    }
+
+
+    return clamp(
+        1 - waist,
+        0,
+        1
+    );
+}
+
+
+/* =========================================================
+   SHAPE VERTICES
+   ========================================================= */
+
+function getShapeVertices(
+    type,
+    cx,
+    cy,
+    radius
+) {
+
+    if (type === "triangle") {
+        return polygon(
+            3,
+            cx,
+            cy,
+            radius
+        );
+    }
+
+
+    if (type === "square") {
+        return polygon(
+            4,
+            cx,
+            cy,
+            radius
+        );
+    }
+
+
+    if (type === "pentagon") {
+        return polygon(
+            5,
+            cx,
+            cy,
+            radius
+        );
+    }
+
+
+    if (type === "star") {
+        return star(
+            cx,
+            cy,
+            radius
+        );
+    }
+
+
+    if (type === "hourglass") {
+        return hourglass(
+            cx,
+            cy,
+            radius
+        );
+    }
+
+
+    return [];
+}
+
+
+/* =========================================================
+   POLYGON
+   ========================================================= */
+
+function polygon(
+    count,
+    cx,
+    cy,
+    radius
+) {
+
+    const result = [];
+
+
+    for (
+        let i = 0;
+        i < count;
+        i++
+    ) {
+
+        const angle =
+            -Math.PI / 2 +
+            (
+                Math.PI * 2 *
+                i /
+                count
+            );
+
+
+        result.push({
+
+            x:
+                cx +
+                Math.cos(angle) *
+                radius,
+
+            y:
+                cy +
+                Math.sin(angle) *
+                radius
+        });
+    }
+
+
+    return result;
+}
+
+
+/* =========================================================
+   STAR
+   ========================================================= */
+
+function star(
+    cx,
+    cy,
+    radius
+) {
+
+    const result = [];
+
+
+    for (
+        let i = 0;
+        i < 10;
+        i++
+    ) {
+
+        const angle =
+            -Math.PI / 2 +
+            (
+                Math.PI * 2 *
+                i /
+                10
+            );
+
+
+        const r =
+            i % 2 === 0
+                ? radius
+                : radius * 0.42;
+
+
+        result.push({
+
+            x:
+                cx +
+                Math.cos(angle) * r,
+
+            y:
+                cy +
+                Math.sin(angle) * r
+        });
+    }
+
+
+    return result;
+}
+
+
+/* =========================================================
+   HOURGLASS
+   ========================================================= */
+
+function hourglass(
+    cx,
+    cy,
+    radius
+) {
+
+    const w =
+        radius * 0.85;
+
+    const h =
+        radius * 0.85;
+
+    const waist =
+        radius * 0.22;
+
+
+    return [
+
+        {
+            x: cx - w,
+            y: cy - h
+        },
+
+        {
+            x: cx + w,
+            y: cy - h
+        },
+
+        {
+            x: cx + waist,
+            y: cy
+        },
+
+        {
+            x: cx + w,
+            y: cy + h
+        },
+
+        {
+            x: cx - w,
+            y: cy + h
+        },
+
+        {
+            x: cx - waist,
+            y: cy
+        }
+    ];
+}
+
+
+/* =========================================================
+   RDP SIMPLIFICATION
+   ========================================================= */
+
+function simplify(points, epsilon) {
+
+    if (points.length < 3) {
+        return points.slice();
+    }
+
+    /*
+     * RDP по всему контуру.
+     *
+     * В отличие от предыдущей версии мы НЕ
+     * разбиваем замкнутую линию на два участка.
+     * Из-за этого вершины больше не теряются.
+     */
+    let result = rdp(points, epsilon);
+
+    /*
+     * Если последняя точка практически совпадает
+     * с первой — убираем дубликат.
+     */
+    if (
+        result.length > 1 &&
+        distance(
+            result[0],
+            result[result.length - 1]
+        ) < epsilon * 2
+    ) {
+        result.pop();
+    }
+
+    /*
+     * Убираем точки, которые оказались слишком
+     * близко друг к другу.
+     */
+    result = removeDuplicates(result);
+
+    return result;
+}
+
+
+/* =========================================================
+   RDP
+   ========================================================= */
+
+function rdp(
+    points,
+    epsilon
+) {
+
+    if (points.length <= 2) {
+        return points.slice();
+    }
+
+
+    let maxDistance = 0;
+    let index = 0;
+
+
+    const first =
+        points[0];
+
+    const last =
+        points[points.length - 1];
+
+
+    for (
+        let i = 1;
+        i < points.length - 1;
+        i++
+    ) {
+
+        const d =
+            pointLineDistance(
+                points[i],
+                first,
+                last
+            );
+
+
+        if (
+            d > maxDistance
+        ) {
+
+            maxDistance = d;
+            index = i;
+        }
+    }
+
+
+    if (
+        maxDistance > epsilon
+    ) {
+
+        const left =
+            rdp(
+                points.slice(
+                    0,
+                    index + 1
+                ),
+                epsilon
+            );
+
+
+        const right =
+            rdp(
+                points.slice(index),
+                epsilon
+            );
+
+
+        left.pop();
+
+
+        return [
+            ...left,
+            ...right
+        ];
+    }
+
+
+    return [
+        first,
+        last
+    ];
+}
+
+
+/* =========================================================
+   GEOMETRY
+   ========================================================= */
+
+function getBounds(points) {
+
+    let minX = Infinity;
+    let minY = Infinity;
+
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+
+
+    for (const p of points) {
+
+        minX =
+            Math.min(minX, p.x);
+
+        minY =
+            Math.min(minY, p.y);
+
+        maxX =
+            Math.max(maxX, p.x);
+
+        maxY =
+            Math.max(maxY, p.y);
+    }
+
+
+    return {
+        width: maxX - minX,
+        height: maxY - minY
+    };
+}
+
+
+function centroid(points) {
+
+    let x = 0;
+    let y = 0;
+
+
+    for (const p of points) {
+
+        x += p.x;
+        y += p.y;
+    }
+
+
+    return {
+        x: x / points.length,
+        y: y / points.length
+    };
+}
+
+
+function distance(a, b) {
+
+    return Math.hypot(
+        a.x - b.x,
+        a.y - b.y
+    );
+}
+
+
+function pointLineDistance(
+    p,
+    a,
+    b
+) {
+
+    const dx =
+        b.x - a.x;
+
+    const dy =
+        b.y - a.y;
+
+
+    if (
+        dx === 0 &&
+        dy === 0
+    ) {
+        return distance(p, a);
+    }
+
+
+    const t =
+        (
+            (p.x - a.x) * dx +
+            (p.y - a.y) * dy
+        ) /
+        (
+            dx * dx +
+            dy * dy
+        );
+
+
+    const clamped =
+        Math.max(
+            0,
+            Math.min(1, t)
+        );
+
+
+    return distance(
+        p,
+        {
+            x:
+                a.x +
+                dx * clamped,
+
+            y:
+                a.y +
+                dy * clamped
+        }
+    );
+}
+
+
+function angleAt(a, b, c) {
+
+    const ab = {
+        x: a.x - b.x,
+        y: a.y - b.y
+    };
+
+    const cb = {
+        x: c.x - b.x,
+        y: c.y - b.y
+    };
+
+
+    const dot =
+        ab.x * cb.x +
+        ab.y * cb.y;
+
+
+    const len =
+        Math.hypot(ab.x, ab.y) *
+        Math.hypot(cb.x, cb.y);
+
+
+    if (len === 0) {
+        return 0;
+    }
+
+
+    return Math.acos(
+        clamp(
+            dot / len,
+            -1,
+            1
+        )
+    );
+}
+
+
+function cross(a, b, c) {
+
+    return (
+        (b.x - a.x) *
+        (c.y - a.y)
+        -
+        (b.y - a.y) *
+        (c.x - a.x)
+    );
+}
+
+
+function isConvex(points) {
+
+    let sign = 0;
+
+
+    for (
+        let i = 0;
+        i < points.length;
+        i++
+    ) {
+
+        const c =
+            cross(
+                points[i],
+                points[
+                    (i + 1) %
+                    points.length
+                ],
+                points[
+                    (i + 2) %
+                    points.length
+                ]
+            );
+
+
+        if (
+            Math.abs(c) < 0.001
+        ) {
+            continue;
+        }
+
+
+        const current =
+            Math.sign(c);
+
+
+        if (sign === 0) {
+
+            sign = current;
+
+        } else if (
+            sign !== current
+        ) {
+
+            return false;
+        }
+    }
+
+
+    return true;
+}
+
+
+function average(values) {
+
+    return values.reduce(
+        (a, b) => a + b,
+        0
+    ) / values.length;
+}
+
+
+function standardDeviation(values) {
+
+    const avg =
+        average(values);
+
+
+    return Math.sqrt(
+        average(
+            values.map(
+                x =>
+                    (x - avg) *
+                    (x - avg)
+            )
+        )
+    );
+}
+
+
+function clamp(
+    value,
+    min,
+    max
+) {
+
+    return Math.max(
+        min,
+        Math.min(max, value)
+    );
+}
+
+
+function removeDuplicates(points) {
+
+    const result = [];
+
+
+    for (const p of points) {
+
+        if (
+            result.length === 0 ||
+            distance(
+                result[result.length - 1],
+                p
+            ) > 3
+        ) {
+
+            result.push(p);
+        }
+    }
+
+
+    return result;
+}
+
+
+/* =========================================================
+   POINTER POSITION
+   ========================================================= */
+
+function getMousePosition(e) {
+
+    const rect =
+        canvas.getBoundingClientRect();
+
+
+    return {
+
+        x:
+            e.clientX -
+            rect.left,
+
+        y:
+            e.clientY -
+            rect.top
+    };
+}
+
+
+/* =========================================================
+   START
+   ========================================================= */
+
+resizeCanvas();
+
+</script>
+
+</body>
+</html>
